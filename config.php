@@ -1,13 +1,16 @@
+```php
 <?php
 
 // ========================================
 // 1. DATABASE SETTINGS
 // ========================================
 
-define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_HOST', getenv('DB_HOST') ?: 'database-jobfinder.k.aivencloud.com');
+define('DB_PORT', (int) (getenv('DB_PORT') ?: 12361));
+define('DB_USER', getenv('DB_USER') ?: 'avnadmin');
 define('DB_PASS', getenv('DB_PASS') ?: '');
-define('DB_NAME', getenv('DB_NAME') ?: 'jobfinder');
+define('DB_NAME', getenv('DB_NAME') ?: 'defaultdb');
+define('DB_SSL_CA', getenv('DB_SSL_CA') ?: '/etc/secrets/ca.pem');
 
 // ========================================
 // 2. GEMINI API SETTINGS
@@ -29,15 +32,45 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-mysqli_report(MYSQLI_REPORT_OFF);
-
 // ========================================
 // 4. DATABASE CONNECTION
 // ========================================
 
-$db = @new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+mysqli_report(MYSQLI_REPORT_OFF);
 
-if ($db->connect_errno) {
+$db = mysqli_init();
+
+if (!$db) {
+    error_log('Could not initialize MySQL connection.');
+    http_response_code(500);
+    exit('Could not initialize database connection.');
+}
+
+if (DB_PASS === '') {
+    error_log('Database password is missing.');
+    http_response_code(500);
+    exit('Database settings are incomplete.');
+}
+
+if (!is_readable(DB_SSL_CA)) {
+    error_log('Aiven SSL CA certificate is missing or unreadable.');
+    http_response_code(500);
+    exit('Database SSL certificate is not configured.');
+}
+
+$db->ssl_set(null, null, DB_SSL_CA, null, null);
+
+$connected = @$db->real_connect(
+    DB_HOST,
+    DB_USER,
+    DB_PASS,
+    DB_NAME,
+    DB_PORT,
+    null,
+    MYSQLI_CLIENT_SSL
+);
+
+if (!$connected) {
     error_log('Database connection failed: ' . $db->connect_error);
     http_response_code(500);
     exit('Database connection failed. Check database settings.');
@@ -63,11 +96,15 @@ function e($value): string
 function company_logo(array $job): string
 {
     $company = e($job['company'] ?? 'Company');
+
     if (empty($job['company_logo'])) {
-        return '<span class="company-logo company-logo-placeholder" role="img" aria-label="' . $company . ' logo">CO</span>';
+        return '<span class="company-logo company-logo-placeholder" role="img" aria-label="' .
+            $company . ' logo">CO</span>';
     }
 
-    return '<img class="company-logo" src="' . e($job['company_logo']) . '" alt="' . $company . ' logo" loading="lazy">';
+    return '<img class="company-logo" src="' .
+        e($job['company_logo']) .
+        '" alt="' . $company . ' logo" loading="lazy">';
 }
 
 function job_categories(): array
@@ -160,7 +197,9 @@ function q(string $sql, array $params = []): array
             unset($value);
 
             if (!$stmt->bind_param($types, ...$references)) {
-                throw new RuntimeException('Database parameter binding failed.');
+                throw new RuntimeException(
+                    'Database parameter binding failed.'
+                );
             }
         }
 
@@ -176,7 +215,6 @@ function q(string $sql, array $params = []): array
         }
 
         return $result->fetch_all(MYSQLI_ASSOC);
-
     } finally {
         $stmt->close();
     }
@@ -223,7 +261,9 @@ function x(string $sql, array $params = []): int
             unset($value);
 
             if (!$stmt->bind_param($types, ...$references)) {
-                throw new RuntimeException('Database parameter binding failed.');
+                throw new RuntimeException(
+                    'Database parameter binding failed.'
+                );
             }
         }
 
@@ -233,7 +273,6 @@ function x(string $sql, array $params = []): int
         }
 
         return (int) $db->insert_id;
-
     } finally {
         $stmt->close();
     }
@@ -261,8 +300,6 @@ function gemini(string $prompt, bool $json = true): array
         'input' => $prompt
     ];
 
-    // Current Interactions API structured-output format.
-    // A schema can be added when the required output keys are known.
     if ($json) {
         $body['response_format'] = [
             'type' => 'text',
@@ -281,6 +318,10 @@ function gemini(string $prompt, bool $json = true): array
 
     $ch = curl_init(GEMINI_API_URL);
 
+    if ($ch === false) {
+        return [null, 'Could not initialize Gemini connection.'];
+    }
+
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
@@ -296,6 +337,9 @@ function gemini(string $prompt, bool $json = true): array
     ]);
 
     $maxAttempts = 3;
+    $response = false;
+    $curlError = '';
+    $status = 0;
 
     for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
         $retryAfter = null;
@@ -303,9 +347,14 @@ function gemini(string $prompt, bool $json = true): array
         curl_setopt(
             $ch,
             CURLOPT_HEADERFUNCTION,
-            static function ($handle, string $headerLine) use (&$retryAfter): int {
+            static function (
+                $handle,
+                string $headerLine
+            ) use (&$retryAfter): int {
                 if (stripos($headerLine, 'Retry-After:') === 0) {
-                    $retryAfter = trim(substr($headerLine, strlen('Retry-After:')));
+                    $retryAfter = trim(
+                        substr($headerLine, strlen('Retry-After:'))
+                    );
                 }
 
                 return strlen($headerLine);
@@ -315,18 +364,23 @@ function gemini(string $prompt, bool $json = true): array
         $response = curl_exec($ch);
         $curlError = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
         $shouldRetry = $status === 503;
 
         if ($status === 429 && $response !== false) {
             $errorData = json_decode($response, true);
+
             $errorMessage = strtolower(
                 is_array($errorData)
                     ? ($errorData['error']['message'] ?? '')
                     : ''
             );
-            $dailyQuotaExceeded = str_contains($errorMessage, 'per day')
-                || str_contains($errorMessage, 'daily')
-                || str_contains($errorMessage, 'free tier');
+
+            $dailyQuotaExceeded =
+                str_contains($errorMessage, 'per day') ||
+                str_contains($errorMessage, 'daily') ||
+                str_contains($errorMessage, 'free tier');
+
             $shouldRetry = !$dailyQuotaExceeded;
         }
 
@@ -347,7 +401,10 @@ function gemini(string $prompt, bool $json = true): array
                 $retryAt = strtotime($retryAfter);
 
                 if ($retryAt !== false) {
-                    $retryDelay = min(max(0, $retryAt - time()), 5);
+                    $retryDelay = min(
+                        max(0, $retryAt - time()),
+                        5
+                    );
                 }
             }
         }
@@ -359,7 +416,6 @@ function gemini(string $prompt, bool $json = true): array
 
     curl_close($ch);
 
-    // Connection or SSL error
     if ($response === false) {
         error_log('Gemini cURL error: ' . $curlError);
 
@@ -371,7 +427,6 @@ function gemini(string $prompt, bool $json = true): array
 
     $data = json_decode($response, true);
 
-    // API error
     if ($status < 200 || $status >= 300) {
         $message = is_array($data)
             ? ($data['error']['message'] ?? 'Gemini API request failed.')
@@ -394,12 +449,19 @@ function gemini(string $prompt, bool $json = true): array
     // Extract generated text from the Interactions API response.
     $text = '';
 
-    if (isset($data['output_text']) && is_string($data['output_text'])) {
+    if (
+        isset($data['output_text']) &&
+        is_string($data['output_text'])
+    ) {
         $text = $data['output_text'];
     }
 
     // Fallback: read model output text from response steps.
-    if ($text === '' && isset($data['steps']) && is_array($data['steps'])) {
+    if (
+        $text === '' &&
+        isset($data['steps']) &&
+        is_array($data['steps'])
+    ) {
         foreach ($data['steps'] as $step) {
             if (($step['type'] ?? '') !== 'model_output') {
                 continue;
@@ -425,7 +487,6 @@ function gemini(string $prompt, bool $json = true): array
 
     $text = trim($text);
 
-    // Plain text mode
     if (!$json) {
         return [$text, null];
     }
@@ -448,3 +509,4 @@ function gemini(string $prompt, bool $json = true): array
 
 // Do not add a closing PHP tag.
 // Save this file as UTF-8 without BOM.
+```
