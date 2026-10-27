@@ -30,7 +30,6 @@ define(
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
-
 // ========================================
 // 4. DATABASE CONNECTION
 // ========================================
