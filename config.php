@@ -18,14 +18,13 @@ define('DB_SSL_CA', getenv('DB_SSL_CA') ?: '/etc/secrets/ca.pem');
 
 define('GEMINI_API_KEY', getenv('GEMINI_API_KEY') ?: '');
 define('GEMINI_MODEL', getenv('GEMINI_MODEL') ?: 'gemini-3.8-flash');
-
 define(
     'GEMINI_API_URL',
     'https://generativelanguage.googleapis.com/v1beta/interactions'
 );
 
 // ========================================
-// 3. SESSION
+// 3. SESSION SETTINGS
 // ========================================
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -81,7 +80,7 @@ if (!$db->set_charset('utf8mb4')) {
 }
 
 // ========================================
-// 5. HELPER FUNCTIONS
+// 5. HTML ESCAPING HELPER
 // ========================================
 
 function e($value): string
@@ -92,6 +91,10 @@ function e($value): string
         'UTF-8'
     );
 }
+
+// ========================================
+// 6. COMPANY LOGO HELPER
+// ========================================
 
 function company_logo(array $job): string
 {
@@ -106,6 +109,10 @@ function company_logo(array $job): string
         e($job['company_logo']) .
         '" alt="' . $company . ' logo" loading="lazy">';
 }
+
+// ========================================
+// 7. JOB CATEGORIES
+// ========================================
 
 function job_categories(): array
 {
@@ -125,10 +132,18 @@ function job_categories(): array
     ];
 }
 
+// ========================================
+// 8. CURRENT USER
+// ========================================
+
 function user()
 {
     return $_SESSION['user'] ?? null;
 }
+
+// ========================================
+// 9. FLASH MESSAGE
+// ========================================
 
 function flash($message = null)
 {
@@ -142,6 +157,10 @@ function flash($message = null)
 
     return $message;
 }
+
+// ========================================
+// 10. AUTHENTICATION / ROLE CHECK
+// ========================================
 
 function need($role = null): void
 {
@@ -157,8 +176,8 @@ function need($role = null): void
 }
 
 // ========================================
-// 6. SQL QUERY HELPER
-// SELECT queries return an array of rows
+// 11. SELECT QUERY HELPER
+// Returns an array of rows
 // ========================================
 
 function q(string $sql, array $params = []): array
@@ -221,7 +240,7 @@ function q(string $sql, array $params = []): array
 }
 
 // ========================================
-// 7. INSERT / UPDATE / DELETE HELPER
+// 12. INSERT / UPDATE / DELETE HELPER
 // Returns the database insert ID
 // ========================================
 
@@ -279,10 +298,8 @@ function x(string $sql, array $params = []): int
 }
 
 // ========================================
-// 8. GEMINI API
-// Returns: [result, error]
-// $json = true  => decoded JSON response
-// $json = false => plain text response
+// 13. GEMINI API HELPER
+// Returns [result, error]
 // ========================================
 
 function gemini(string $prompt, bool $json = true): array
@@ -297,13 +314,13 @@ function gemini(string $prompt, bool $json = true): array
 
     $body = [
         'model' => GEMINI_MODEL,
-        'input' => $prompt
+        'input' => $prompt,
     ];
 
     if ($json) {
         $body['response_format'] = [
             'type' => 'text',
-            'mime_type' => 'application/json'
+            'mime_type' => 'application/json',
         ];
     }
 
@@ -331,9 +348,9 @@ function gemini(string $prompt, bool $json = true): array
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
-            'x-goog-api-key: ' . GEMINI_API_KEY
+            'x-goog-api-key: ' . GEMINI_API_KEY,
         ],
-        CURLOPT_POSTFIELDS => $payload
+        CURLOPT_POSTFIELDS => $payload,
     ]);
 
     $maxAttempts = 3;
@@ -347,10 +364,7 @@ function gemini(string $prompt, bool $json = true): array
         curl_setopt(
             $ch,
             CURLOPT_HEADERFUNCTION,
-            static function (
-                $handle,
-                string $headerLine
-            ) use (&$retryAfter): int {
+            static function ($handle, string $headerLine) use (&$retryAfter): int {
                 if (stripos($headerLine, 'Retry-After:') === 0) {
                     $retryAfter = trim(
                         substr($headerLine, strlen('Retry-After:'))
@@ -421,7 +435,7 @@ function gemini(string $prompt, bool $json = true): array
 
         return [
             null,
-            'Could not connect to Gemini. Check network and SSL settings.'
+            'Could not connect to Gemini. Check network and SSL settings.',
         ];
     }
 
@@ -436,7 +450,7 @@ function gemini(string $prompt, bool $json = true): array
 
         return [
             null,
-            'Gemini API error (HTTP ' . $status . '): ' . $message
+            'Gemini API error (HTTP ' . $status . '): ' . $message,
         ];
     }
 
@@ -446,7 +460,6 @@ function gemini(string $prompt, bool $json = true): array
         return [null, 'Invalid response received from Gemini.'];
     }
 
-    // Extract generated text from the Interactions API response.
     $text = '';
 
     if (
@@ -456,7 +469,6 @@ function gemini(string $prompt, bool $json = true): array
         $text = $data['output_text'];
     }
 
-    // Fallback: read model output text from response steps.
     if (
         $text === '' &&
         isset($data['steps']) &&
@@ -491,7 +503,7 @@ function gemini(string $prompt, bool $json = true): array
         return [$text, null];
     }
 
-    // Remove optional Markdown code fences.
+    // Remove optional Markdown code fences from AI-generated JSON.
     $text = preg_replace('/^\s*```(?:json)?\s*/i', '', $text);
     $text = preg_replace('/\s*```\s*$/', '', $text);
     $text = trim($text);
@@ -507,6 +519,4 @@ function gemini(string $prompt, bool $json = true): array
     return [$result, null];
 }
 
-// Do not add a closing PHP tag.
-// Save this file as UTF-8 without BOM.
-```
+// End of config.php — do not add a closing PHP tag.
